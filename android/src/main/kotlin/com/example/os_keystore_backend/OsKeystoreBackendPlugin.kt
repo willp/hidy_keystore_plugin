@@ -132,6 +132,19 @@ class OsKeystoreBackendPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       } else {
         result.error("ArgumentError", "Missing argument", "")
       }
+    } else if(call.method == "exportPublicKeySpkiBase64"){
+      val keyId = call.argument<String>("keyId")
+
+      if(keyId != null ){
+        try {
+          val spkiBase64 = exportPublicKeySpkiBase64(keyId)
+          result.success(spkiBase64)
+        }catch (e: Exception){
+          result.error("ExportError", e.message, "")
+        }
+      } else {
+        result.error("ArgumentError", "Missing argument", "")
+      }
     }else if(call.method == "hasKey"){
       val keyId = call.argument<String>("keyId")
 
@@ -453,6 +466,19 @@ class OsKeystoreBackendPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
     }
 
     return verified
+  }
+
+  private fun exportPublicKeySpkiBase64(keyId: String): String {
+    val ks: KeyStore = KeyStore.getInstance("AndroidKeyStore").apply {
+      load(null)
+    }
+
+    val entry: KeyStore.Entry = ks.getEntry(keyId, null)
+    if (entry !is KeyStore.PrivateKeyEntry) {
+      throw Exception("No private key")
+    }
+    // PublicKey.encoded is already X.509 SubjectPublicKeyInfo (SPKI) DER
+    return Base64.getEncoder().encodeToString(entry.certificate.publicKey.encoded)
   }
 
   private fun getKeyInfo(keyId: String) : Map<String, Any>{

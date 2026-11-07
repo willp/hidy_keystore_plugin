@@ -40,6 +40,8 @@ abstract class OsKeystoreBackendPlatform extends PlatformInterface {
 
   Future<Map> getKeyInfo(String keyId);
 
+  Future<String> exportPublicKeySpkiBase64(String keyId);
+
   Future<bool> hasKey(String keyId);
 
   Future<bool> deleteKey(String keyId);

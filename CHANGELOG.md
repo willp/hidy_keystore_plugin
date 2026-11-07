@@ -2,6 +2,7 @@
 
 - add optional `allowKeyAgreement` to `generateKey` (default false; requires no user authentication; Android API 31+)
 - add `performEcdh` returning raw ECDH shared secret Z (`Uint8List`); peer public key is SPKI DER Base64
+- add `exportPublicKeySpkiBase64` returning a uniform SPKI DER Base64 public key on Android and iOS
 - iOS `getKeyInfo` reports `deriveKey` in `key_ops` when key agreement is enabled
 - throw `UnsupportedAndroidApiException` when `allowKeyAgreement` is used on Android API levels below 31 (Earlier than Android OS 12)
 

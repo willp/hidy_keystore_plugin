@@ -70,6 +70,16 @@ void main() {
     expect(keyInfo, isNotNull);
   });
 
+  testWidgets('exportPublicKeySpkiBase64 returns P-256 SPKI', (tester) async {
+    final keyId = await OsKeystoreBackend().generateKey('secp256r1', false);
+    final spkiBase64 =
+        await OsKeystoreBackend().exportPublicKeySpkiBase64(keyId);
+    final spki = base64Decode(spkiBase64);
+    expect(spki.length, 91);
+    expect(spki[0], 0x30); // SEQUENCE
+    expect(spki[26], 0x04); // uncompressed point
+  });
+
   testWidgets('Has key', (tester) async {
     final keyId = await OsKeystoreBackend().generateKey("secp256r1", true);
     final hasKey = await OsKeystoreBackend().hasKey(keyId);

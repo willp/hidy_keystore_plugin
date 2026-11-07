@@ -92,6 +92,17 @@ class MethodChannelOsKeystoreBackend extends OsKeystoreBackendPlatform {
   }
 
   @override
+  Future<String> exportPublicKeySpkiBase64(String keyId) async {
+    final spkiBase64 = await methodChannel.invokeMethod<String>(
+        'exportPublicKeySpkiBase64', <String, dynamic>{'keyId': keyId});
+    if (spkiBase64 != null) {
+      return spkiBase64;
+    } else {
+      throw Exception('Exporting public key failed');
+    }
+  }
+
+  @override
   Future<bool> hasKey(String keyId) async {
     bool? info;
     try {

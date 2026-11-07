@@ -93,6 +93,19 @@ public class OsKeystoreBackendPlugin: NSObject, FlutterPlugin {
                 result(FlutterError(code: "getKeyInfo", message: "Unknown error", details: nil))
             }
 
+        case "exportPublicKeySpkiBase64":
+            do {
+              try handleExportPublicKeySpkiBase64(call: call, result: result)
+            } catch (OsKeystoreBackendPluginError.keyNotFound(let message)) {
+                result(FlutterError(code: "exportPublicKeySpkiBase64.keyNotFound", message: message, details: nil))
+            } catch (OsKeystoreBackendPluginError.unsupportedAlgorithm(let message)) {
+                result(FlutterError(code: "exportPublicKeySpkiBase64.unsuppoertedAlgorithm", message: message, details: nil))
+            } catch (OsKeystoreBackendPluginError.argumentError(let message)) {
+                result(FlutterError(code: "exportPublicKeySpkiBase64.argumentError", message: message, details: nil))
+            } catch {
+                result(FlutterError(code: "exportPublicKeySpkiBase64", message: "Unknown error", details: nil))
+            }
+
         case "hasKey":
             do { 
               try handleHasKey(call: call, result: result)
@@ -502,6 +515,52 @@ public class OsKeystoreBackendPlugin: NSObject, FlutterPlugin {
             else { throw OsKeystoreBackendPluginError.deletionError(status: status) }
             // Return success
             result(true)
+        }
+        catch let e as OsKeystoreBackendPluginError {
+            result(e.asFlutterError)
+        }
+        catch {
+            result(FlutterError(code: "UNEXPECTED", message: error.localizedDescription, details: nil))
+        }
+    }
+
+    private func handleExportPublicKeySpkiBase64(call: FlutterMethodCall, result: @escaping FlutterResult) throws {
+        do {
+            let args = call.arguments as? [String: Any]
+            guard let keyId = args?["keyId"] as? String else {
+                throw OsKeystoreBackendPluginError.argumentError(message: "Missing keyId argument")
+            }
+
+            let getquery: [String: Any] = [
+                kSecClass as String: kSecClassKey,
+                kSecAttrApplicationTag as String: keyId,
+                kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+                kSecReturnRef as String: true
+            ]
+
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(getquery as CFDictionary, &item)
+            guard status == errSecSuccess, let privateKey = item else {
+                throw OsKeystoreBackendPluginError.keyNotFound(message: "No private key for id \(keyId)")
+            }
+
+            guard let publicKey = SecKeyCopyPublicKey(privateKey as! SecKey) else {
+                throw OsKeystoreBackendPluginError.keyNotFound(message: "No public key for id \(keyId)")
+            }
+
+            var error: Unmanaged<CFError>?
+            guard let rawKeyData = SecKeyCopyExternalRepresentation(publicKey, &error) as Data? else {
+                throw error!.takeRetainedValue() as Error
+            }
+
+            guard rawKeyData.count == 65, rawKeyData.first == 0x04 else {
+                throw OsKeystoreBackendPluginError.unsupportedAlgorithm(
+                    message: "Unexpected public key format or length")
+            }
+
+            var spkiData = Data(Self.p256SpkiHeader)
+            spkiData.append(rawKeyData)
+            result(spkiData.base64EncodedString())
         }
         catch let e as OsKeystoreBackendPluginError {
             result(e.asFlutterError)

@@ -14,6 +14,12 @@ var sig = await _osKeystoreBackendPlugin.sign(
 
 ```
 
+Export the device public key as SPKI DER Base64 (same format on Android and iOS;
+prefer this over parsing `getKeyInfo` `x5c` / `x`/`y` for backend registration):
+```
+var devicePubSpki = await _osKeystoreBackendPlugin.exportPublicKeySpkiBase64(keyId);
+```
+
 ECDH (raw shared secret Z). Requires a non-auth key with `allowKeyAgreement: true`.
 The peer public key must be uncompressed P-256 SPKI DER encoded as Base64.
 On Android, `allowKeyAgreement` requires API 31+; below that, `generateKey` throws
@@ -42,3 +48,4 @@ For more complex example please have a look at [example](./example).
 if not available the trusted execution environment is used
 - On iOS only curve secp256r1 is supported
 - `performEcdh` does not support keys with `userAuthenticationRequired: true`
+- `exportPublicKeySpkiBase64` returns SPKI DER Base64 suitable for OpenSSL / Node / Go crypto APIs

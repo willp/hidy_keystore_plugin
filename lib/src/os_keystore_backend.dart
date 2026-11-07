@@ -72,6 +72,15 @@ class OsKeystoreBackend {
         .performEcdh(keyId, peerPublicKeySpkiBase64);
   }
 
+  /// Returns the public key for [keyId] as SPKI DER encoded in standard Base64.
+  ///
+  /// For P-256 this is 91 bytes before Base64 (26-byte ASN.1 header + 65-byte
+  /// uncompressed point). Prefer this over parsing [getKeyInfo] `x5c` / `x`/`y`
+  /// when registering a device public key with a backend.
+  Future<String> exportPublicKeySpkiBase64(String keyId) {
+    return OsKeystoreBackendPlatform.instance.exportPublicKeySpkiBase64(keyId);
+  }
+
   /// Returns metadata about the key identified by [keyId].
   ///
   /// This metadata has jwk format. The keys kty, key_ops, crv, x5c (to provide the public key on Android) or x and y on iOS,
