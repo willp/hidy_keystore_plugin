@@ -24,8 +24,10 @@ import java.security.KeyStore
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.InvalidKeySpecException
+import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
 import java.util.concurrent.Executor
+import javax.crypto.KeyAgreement
 import kotlin.random.Random
 
 
@@ -60,15 +62,26 @@ class OsKeystoreBackendPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       val curve = call.argument<String>("curve")
       if(curve == null){
         result.error("ArgumentError", "Missing argument curve", "")
+        return
       }
 
       val userAuth = call.argument<Boolean>("userAuthenticationRequired") ?: false
       val attestationChallenge = call.argument<String>("attestationChallenge") ?: ""
       val authType = call.argument<Int>("authType") ?: 2
       val invalidByNewBiometric = call.argument<Boolean>("invalidateByNewBiometric") ?: true
+      val allowKeyAgreement = call.argument<Boolean>("allowKeyAgreement") ?: false
+
+      if (allowKeyAgreement && android.os.Build.VERSION.SDK_INT < 31) {
+        result.error(
+          "UnsupportedAndroidApi",
+          "allowKeyAgreement requires Android API 31 (Android 12) or higher.",
+          null
+        )
+        return
+      }
 
       try {
-        val keyId = generateKey(curve!!, userAuth, authType, attestationChallenge, invalidByNewBiometric)
+        val keyId = generateKey(curve, userAuth, authType, attestationChallenge, invalidByNewBiometric, allowKeyAgreement)
         result.success(keyId)
       } catch(e: Exception){
         result.error("GenerationError", e.message, e.stackTraceToString())
@@ -145,6 +158,20 @@ class OsKeystoreBackendPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       } else {
         result.error("ArgumentError", "Missing argument", "")
       }
+    } else if(call.method == "performEcdh"){
+      val keyId = call.argument<String>("keyId")
+      val peerPublicKeySpkiBase64 = call.argument<String>("peerPublicKeySpkiBase64")
+
+      if(keyId != null && peerPublicKeySpkiBase64 != null){
+        try {
+          val sharedSecret = performEcdh(keyId, peerPublicKeySpkiBase64)
+          result.success(sharedSecret)
+        }catch (e: Exception){
+          result.error("ECDHError", e.message, e.stackTraceToString())
+        }
+      } else {
+        result.error("ArgumentError", "Missing argument", "")
+      }
     }
     else {
       result.notImplemented()
@@ -155,7 +182,11 @@ class OsKeystoreBackendPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
     channel.setMethodCallHandler(null)
   }
 
-  private fun generateKey(curve: String, userAuthenticationRequired: Boolean, allowedAuthType: Int, attestationChallenge: String, invalidateByBiometricEnrollment: Boolean): String {
+  private fun generateKey(curve: String, userAuthenticationRequired: Boolean, allowedAuthType: Int, attestationChallenge: String, invalidateByBiometricEnrollment: Boolean, allowKeyAgreement: Boolean): String {
+    if (allowKeyAgreement && userAuthenticationRequired) {
+      throw Exception("allowKeyAgreement requires userAuthenticationRequired to be false")
+    }
+
     val keyPairGenerator = KeyPairGenerator.getInstance(
       KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore"
     )
@@ -174,6 +205,11 @@ class OsKeystoreBackendPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
 
     alias = "${digest}_$alias"
 
+    var purposes = KeyProperties.PURPOSE_SIGN
+    if (allowKeyAgreement) {
+      purposes = purposes or KeyProperties.PURPOSE_AGREE_KEY
+    }
+
     val authType = if(android.os.Build.VERSION.SDK_INT >= 30) {
       when(allowedAuthType){
         1 -> KeyProperties.AUTH_DEVICE_CREDENTIAL
@@ -190,7 +226,7 @@ class OsKeystoreBackendPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
      val builder =
         KeyGenParameterSpec.Builder(
           alias,
-          KeyProperties.PURPOSE_SIGN
+          purposes
         )
           .setAlgorithmParameterSpec(ECGenParameterSpec(curve))
           .setDigests(digest)
@@ -210,7 +246,7 @@ class OsKeystoreBackendPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       alias += "_tee"
      val builder = KeyGenParameterSpec.Builder(
        alias,
-       KeyProperties.PURPOSE_SIGN
+       purposes
      )
        .setAlgorithmParameterSpec(ECGenParameterSpec(curve))
        .setDigests(digest)
@@ -229,7 +265,7 @@ class OsKeystoreBackendPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       alias += "_tee"
       val builder = KeyGenParameterSpec.Builder(
         alias,
-        KeyProperties.PURPOSE_SIGN
+        purposes
       )
         .setAlgorithmParameterSpec(ECGenParameterSpec(curve))
         .setDigests(digest)
@@ -247,6 +283,42 @@ class OsKeystoreBackendPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
     }
 
     return alias
+  }
+
+  private fun performEcdh(keyId: String, peerPublicKeySpkiBase64: String): ByteArray {
+    val ks: KeyStore = KeyStore.getInstance("AndroidKeyStore").apply {
+      load(null)
+    }
+
+    val entry: KeyStore.Entry = ks.getEntry(keyId, null)
+    if (entry !is KeyStore.PrivateKeyEntry) {
+      throw Exception("No private key")
+    }
+
+    val factory = KeyFactory.getInstance(entry.privateKey.algorithm, "AndroidKeyStore")
+    val keyInfo: KeyInfo
+    try {
+      keyInfo = factory.getKeySpec(entry.privateKey, KeyInfo::class.java)
+    } catch (e: InvalidKeySpecException) {
+      throw Exception("No keyInfo found")
+    }
+
+    if (keyInfo.isUserAuthenticationRequired) {
+      throw Exception("performEcdh does not support keys that require user authentication")
+    }
+    if (android.os.Build.VERSION.SDK_INT < 31 ||
+        (keyInfo.purposes and KeyProperties.PURPOSE_AGREE_KEY) == 0) {
+      throw Exception("Key was not generated with allowKeyAgreement")
+    }
+
+    val peerPublicKeyBytes = Base64.getDecoder().decode(peerPublicKeySpkiBase64)
+    val peerPublicKey = KeyFactory.getInstance("EC")
+      .generatePublic(X509EncodedKeySpec(peerPublicKeyBytes))
+
+    val keyAgreement = KeyAgreement.getInstance("ECDH", "AndroidKeyStore")
+    keyAgreement.init(entry.privateKey)
+    keyAgreement.doPhase(peerPublicKey, true)
+    return keyAgreement.generateSecret()
   }
 
   private fun sign(keyId: String,

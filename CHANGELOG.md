@@ -1,3 +1,10 @@
+## 1.4.0
+
+- add optional `allowKeyAgreement` to `generateKey` (default false; requires no user authentication; Android API 31+)
+- add `performEcdh` returning raw ECDH shared secret Z (`Uint8List`); peer public key is SPKI DER Base64
+- iOS `getKeyInfo` reports `deriveKey` in `key_ops` when key agreement is enabled
+- throw `UnsupportedAndroidApiException` when `allowKeyAgreement` is used on Android API levels below 31 (Earlier than Android OS 12)
+
 ## 1.3.0 
 
 - update min flutter version to 3.44

@@ -20,16 +20,26 @@ class OsKeystoreBackend {
   ///
   /// [invalidateByNewBiometric] describes if the key is invalidated in case a new fingerprint/face is enrolled,
   /// Default is set to true, which means that the key is invalidated if a new biometric is added.
+  ///
+  /// [allowKeyAgreement] enables ECDH key agreement (`performEcdh`) for the generated key.
+  /// Defaults to false. Requires [userAuthenticationRequired] to be false (v1). On Android,
+  /// requires API 31+.
   Future<String> generateKey(String curve, bool userAuthenticationRequired,
       {String? attestationChallenge,
       AuthType authType = AuthType.biometricOnly,
-      bool invalidateByNewBiometric = true}) {
+      bool invalidateByNewBiometric = true,
+      bool allowKeyAgreement = false}) {
+    if (allowKeyAgreement && userAuthenticationRequired) {
+      throw ArgumentError(
+          'allowKeyAgreement requires userAuthenticationRequired to be false');
+    }
     return OsKeystoreBackendPlatform.instance.generateKey(
         curve,
         userAuthenticationRequired,
         attestationChallenge,
         authType,
-        invalidateByNewBiometric);
+        invalidateByNewBiometric,
+        allowKeyAgreement);
   }
 
   /// Sign the given [data] with the key identified by [keyId]
@@ -49,6 +59,17 @@ class OsKeystoreBackend {
   /// without any additional encoding (e.g. ASN1)
   Future<bool> verify(String keyId, Uint8List data, Uint8List signature) {
     return OsKeystoreBackendPlatform.instance.verify(keyId, data, signature);
+  }
+
+  /// Performs ECDH with the private key identified by [keyId] and the peer's
+  /// public key given as SPKI DER Base64 ([peerPublicKeySpkiBase64]).
+  ///
+  /// Returns the raw shared secret Z (32 bytes for P-256). The key must have been
+  /// generated with [allowKeyAgreement] true and without user authentication.
+  Future<Uint8List> performEcdh(
+      String keyId, String peerPublicKeySpkiBase64) {
+    return OsKeystoreBackendPlatform.instance
+        .performEcdh(keyId, peerPublicKeySpkiBase64);
   }
 
   /// Returns metadata about the key identified by [keyId].

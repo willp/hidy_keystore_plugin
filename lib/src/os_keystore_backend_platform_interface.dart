@@ -32,7 +32,8 @@ abstract class OsKeystoreBackendPlatform extends PlatformInterface {
       bool userAuthenticationRequired,
       String? attestationChallenge,
       AuthType authType,
-      bool invalidateByNewBiometric);
+      bool invalidateByNewBiometric,
+      bool allowKeyAgreement);
 
   Future<Uint8List> sign(
       String keyId, Uint8List data, BiometricPromptData? promptData);
@@ -44,4 +45,6 @@ abstract class OsKeystoreBackendPlatform extends PlatformInterface {
   Future<bool> deleteKey(String keyId);
 
   Future<bool> verify(String keyId, Uint8List data, Uint8List signature);
+
+  Future<Uint8List> performEcdh(String keyId, String peerPublicKeySpkiBase64);
 }

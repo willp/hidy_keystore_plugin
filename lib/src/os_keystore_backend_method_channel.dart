@@ -5,6 +5,7 @@ import 'package:pointycastle/asn1.dart' as asn1;
 import 'biometric_prompt_data.dart';
 import 'os_keystore_backend.dart';
 import 'os_keystore_backend_platform_interface.dart';
+import 'unsupported_android_api_exception.dart';
 
 /// An implementation of [OsKeystoreBackendPlatform] that uses method channels.
 class MethodChannelOsKeystoreBackend extends OsKeystoreBackendPlatform {
@@ -18,19 +19,31 @@ class MethodChannelOsKeystoreBackend extends OsKeystoreBackendPlatform {
       bool userAuthenticationRequired,
       String? attestationChallenge,
       AuthType authType,
-      bool invalidateByNewBiometric) async {
-    final keyId = await methodChannel
-        .invokeMethod<String>('generateKey', <String, dynamic>{
-      'curve': curve,
-      'userAuthenticationRequired': userAuthenticationRequired,
-      'attestationChallenge': attestationChallenge,
-      'authType': authType.index + 1,
-      'invalidateByNewBiometric': invalidateByNewBiometric
-    });
-    if (keyId != null) {
-      return keyId;
-    } else {
-      throw Exception('Failed to generate Key');
+      bool invalidateByNewBiometric,
+      bool allowKeyAgreement) async {
+    try {
+      final keyId = await methodChannel
+          .invokeMethod<String>('generateKey', <String, dynamic>{
+        'curve': curve,
+        'userAuthenticationRequired': userAuthenticationRequired,
+        'attestationChallenge': attestationChallenge,
+        'authType': authType.index + 1,
+        'invalidateByNewBiometric': invalidateByNewBiometric,
+        'allowKeyAgreement': allowKeyAgreement,
+      });
+      if (keyId != null) {
+        return keyId;
+      } else {
+        throw Exception('Failed to generate Key');
+      }
+    } on PlatformException catch (e) {
+      if (e.code == 'UnsupportedAndroidApi') {
+        throw UnsupportedAndroidApiException(
+          e.message ??
+              'allowKeyAgreement requires Android API 31 (Android 12) or higher.',
+        );
+      }
+      rethrow;
     }
   }
 
@@ -102,6 +115,21 @@ class MethodChannelOsKeystoreBackend extends OsKeystoreBackendPlatform {
       return info;
     } else {
       throw Exception('Fetching information failed');
+    }
+  }
+
+  @override
+  Future<Uint8List> performEcdh(
+      String keyId, String peerPublicKeySpkiBase64) async {
+    final sharedSecret = await methodChannel.invokeMethod<Uint8List>(
+        'performEcdh', <String, dynamic>{
+      'keyId': keyId,
+      'peerPublicKeySpkiBase64': peerPublicKeySpkiBase64,
+    });
+    if (sharedSecret != null) {
+      return sharedSecret;
+    } else {
+      throw Exception('ECDH failed');
     }
   }
 

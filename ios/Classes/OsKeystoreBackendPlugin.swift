@@ -1,15 +1,25 @@
 import Flutter
 import UIKit
 import LocalAuthentication
+import Security
 
 public class OsKeystoreBackendPlugin: NSObject, FlutterPlugin {
     
+    /// Fixed 26-byte ASN.1/SPKI header for uncompressed P-256 public keys.
+    private static let p256SpkiHeader = Data([
+        0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86,
+        0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
+        0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
+        0x42, 0x00
+    ])
+
     enum OsKeystoreBackendPluginError: Error {
         case keyNotFound(message: String)
         case unsupportedAlgorithm(message: String)
         case deletionError(status: OSStatus)
         case argumentError(message: String)
         case failedToCreateAccessControl(description: String)
+        case ecdhError(message: String)
     }
 
     enum AuthType: Int { case deviceCredential = 1; case biometricOnly = 2; case deviceCredentialOrBiometric = 3; case userPresence = 4 }
@@ -111,6 +121,21 @@ public class OsKeystoreBackendPlugin: NSObject, FlutterPlugin {
             } catch {
                 result(FlutterError(code: "deleteKey", message: "Unknown error", details: nil))
             }
+
+        case "performEcdh":
+            do {
+              try handlePerformEcdh(call: call, result: result)
+            } catch (OsKeystoreBackendPluginError.keyNotFound(let message)) {
+                result(FlutterError(code: "performEcdh.keyNotFound", message: message, details: nil))
+            } catch (OsKeystoreBackendPluginError.unsupportedAlgorithm(let message)) {
+                result(FlutterError(code: "performEcdh.unsuppoertedAlgorithm", message: message, details: nil))
+            } catch (OsKeystoreBackendPluginError.argumentError(let message)) {
+                result(FlutterError(code: "performEcdh.argumentError", message: message, details: nil))
+            } catch (OsKeystoreBackendPluginError.ecdhError(let message)) {
+                result(FlutterError(code: "ECDH_FAILED", message: message, details: nil))
+            } catch {
+                result(FlutterError(code: "performEcdh", message: "Unknown error", details: nil))
+            }
             
         default:
             result(FlutterMethodNotImplemented)
@@ -141,6 +166,11 @@ public class OsKeystoreBackendPlugin: NSObject, FlutterPlugin {
             }
             guard let invalidateByNewBiometric = args?["invalidateByNewBiometric"] as? Bool else {
                 throw OsKeystoreBackendPluginError.argumentError(message: "Missing invalidateByNewBiometric argument")
+            }
+            let allowKeyAgreement = args?["allowKeyAgreement"] as? Bool ?? false
+            if allowKeyAgreement && userAuthenticationRequired {
+                throw OsKeystoreBackendPluginError.argumentError(
+                    message: "allowKeyAgreement requires userAuthenticationRequired to be false")
             }
             
             // since we dont know the public key when creating the key we create a uuid instead
@@ -213,7 +243,8 @@ public class OsKeystoreBackendPlugin: NSObject, FlutterPlugin {
                     kSecPrivateKeyAttrs: [
                         kSecAttrIsPermanent: true,
                         kSecAttrApplicationTag: uniqueID.data(using: .utf8)!,
-                        kSecAttrAccessControl: access
+                        kSecAttrAccessControl: access,
+                        kSecAttrCanDerive: allowKeyAgreement
                     ]
                 ]
             }
@@ -393,12 +424,22 @@ public class OsKeystoreBackendPlugin: NSObject, FlutterPlugin {
 
             let attributes = keyAttributeRef as! [String: Any]
             //print(attributes)
+
+            var keyOps = ["sign", "verify"]
+            let privateSecKey = privateKey as! SecKey
+            if let canDerive = attributes[kSecAttrCanDerive as String] as? Bool {
+                if canDerive {
+                    keyOps.append("deriveKey")
+                }
+            } else if SecKeyIsAlgorithmSupported(privateSecKey, .keyExchange, .ecdhKeyExchangeStandard) {
+                keyOps.append("deriveKey")
+            }
             
             // Return a map/dictionary structure to mimic the Android side
             let info: [String: Any] = [
                 "x5c": [],
                 "kty": "EC",
-                "key_ops": ["sign", "verify"],
+                "key_ops": keyOps,
                 "crv": "P-256",
                 "x": xData.base64EncodedString(),
                 "y": yData.base64EncodedString(),
@@ -469,6 +510,115 @@ public class OsKeystoreBackendPlugin: NSObject, FlutterPlugin {
             result(FlutterError(code: "UNEXPECTED", message: error.localizedDescription, details: nil))
         }
     }
+
+    private func handlePerformEcdh(call: FlutterMethodCall, result: @escaping FlutterResult) throws {
+        do {
+            let args = call.arguments as? [String: Any]
+            guard let keyId = args?["keyId"] as? String else {
+                throw OsKeystoreBackendPluginError.argumentError(message: "Missing keyId argument")
+            }
+            guard let peerPublicKeySpkiBase64 = args?["peerPublicKeySpkiBase64"] as? String else {
+                throw OsKeystoreBackendPluginError.argumentError(message: "Missing peerPublicKeySpkiBase64 argument")
+            }
+
+            guard let tagData = keyId.data(using: .utf8) else {
+                throw OsKeystoreBackendPluginError.argumentError(message: "Invalid keyId")
+            }
+
+            let getquery: [String: Any] = [
+                kSecClass as String: kSecClassKey,
+                kSecAttrApplicationTag as String: tagData,
+                kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+                kSecReturnRef as String: true
+            ]
+
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(getquery as CFDictionary, &item)
+            guard status == errSecSuccess, let privateKey = item as! SecKey? else {
+                throw OsKeystoreBackendPluginError.keyNotFound(message: "No private key for id \(keyId)")
+            }
+
+            // Reject auth-required keys (v1) and keys without CanDerive
+            let attrQuery: [String: Any] = [
+                kSecClass as String: kSecClassKey,
+                kSecAttrApplicationTag as String: tagData,
+                kSecReturnAttributes as String: true
+            ]
+            var attrRef: CFTypeRef?
+            let attrStatus = SecItemCopyMatching(attrQuery as CFDictionary, &attrRef)
+            let attributes = (attrStatus == errSecSuccess) ? (attrRef as? [String: Any]) : nil
+            if let attributes = attributes,
+               String(describing: attributes["accc"]).contains("oa(true)") {
+                throw OsKeystoreBackendPluginError.ecdhError(
+                    message: "performEcdh does not support keys that require user authentication")
+            }
+            if let canDerive = attributes?[kSecAttrCanDerive as String] as? Bool, !canDerive {
+                throw OsKeystoreBackendPluginError.ecdhError(
+                    message: "Key was not generated with allowKeyAgreement")
+            }
+
+            let algorithm: SecKeyAlgorithm = .ecdhKeyExchangeStandard
+            guard SecKeyIsAlgorithmSupported(privateKey, .keyExchange, algorithm) else {
+                throw OsKeystoreBackendPluginError.ecdhError(
+                    message: "Key was not generated with allowKeyAgreement or ECDH is unsupported")
+            }
+
+            let peerPublicKey = try createPeerPublicKey(fromSpkiBase64: peerPublicKeySpkiBase64)
+
+            var error: Unmanaged<CFError>?
+            guard let sharedSecret = SecKeyCopyKeyExchangeResult(
+                privateKey,
+                algorithm,
+                peerPublicKey,
+                [:] as CFDictionary,
+                &error
+            ) as Data? else {
+                throw error!.takeRetainedValue() as Error
+            }
+
+            guard sharedSecret.count == 32 else {
+                throw OsKeystoreBackendPluginError.ecdhError(
+                    message: "Unexpected shared secret length: \(sharedSecret.count)")
+            }
+
+            result(FlutterStandardTypedData(bytes: sharedSecret))
+        }
+        catch let e as OsKeystoreBackendPluginError {
+            result(e.asFlutterError)
+        }
+        catch {
+            result(FlutterError(code: "UNEXPECTED", message: error.localizedDescription, details: nil))
+        }
+    }
+
+    private func createPeerPublicKey(fromSpkiBase64 base64: String) throws -> SecKey {
+        guard let spkiData = Data(base64Encoded: base64) else {
+            throw OsKeystoreBackendPluginError.argumentError(message: "Invalid base64 peer public key")
+        }
+        guard spkiData.count == 91,
+              spkiData.prefix(Self.p256SpkiHeader.count) == Self.p256SpkiHeader,
+              spkiData[26] == 0x04 else {
+            throw OsKeystoreBackendPluginError.argumentError(
+                message: "Peer public key must be uncompressed P-256 SPKI DER (91 bytes)")
+        }
+
+        let x963Data = spkiData.suffix(from: 26)
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPublic,
+            kSecAttrKeySizeInBits as String: 256
+        ]
+
+        var error: Unmanaged<CFError>?
+        guard let peerPublicKey = SecKeyCreateWithData(
+            x963Data as CFData,
+            attributes as CFDictionary,
+            &error
+        ) else {
+            throw error!.takeRetainedValue() as Error
+        }
+        return peerPublicKey
+    }
     
     func extractXYFromSecp256r1PublicKey(_ publicKey: SecKey) throws -> (x: Data, y: Data) {
         var error: Unmanaged<CFError>?
@@ -505,6 +655,7 @@ extension OsKeystoreBackendPlugin.OsKeystoreBackendPluginError {
         case .deletionError:               return "DELETION_ERROR"
         case .argumentError:               return "BAD_ARGUMENT"
         case .failedToCreateAccessControl: return "ACCESS_CONTROL"
+        case .ecdhError:                   return "ECDH_FAILED"
         }
     }
 
@@ -514,7 +665,8 @@ extension OsKeystoreBackendPlugin.OsKeystoreBackendPluginError {
         case .keyNotFound(let m),
              .unsupportedAlgorithm(let m),
              .argumentError(let m),
-             .failedToCreateAccessControl(let m):
+             .failedToCreateAccessControl(let m),
+             .ecdhError(let m):
             return m
 
         case .deletionError(let status):
